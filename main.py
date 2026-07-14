@@ -11,15 +11,14 @@ def main():
     except Exception as e:
         print(f"Failed to initialize Foundry Local SDK: {e}")
         return
-    
-    # 2. Kullanılacak modeli belirliyoruz phi-1.5-mini çalışmadığından phi-3.5-mini modelini kullanıyoruz
+
+    # 2. Kullanılacak model
     model_name = "phi-3.5-mini"
     print(f"Preparing model '{model_name}'...")
 
     model = None
 
     try:
-        print("Ensuring execution providers are available...")
         manager.download_and_register_eps()
 
         catalog = manager.catalog
@@ -27,11 +26,11 @@ def main():
 
         if model is None:
             aliases = [m.alias for m in catalog.list_models()]
-            print(f"Model '{model_name}' not found in catalog. Available aliases: {aliases[:20]}")
+            print(f"Model '{model_name}' not found. Available aliases: {aliases[:20]}")
             return
 
         if not getattr(model, "is_cached", False):
-            print(f"Downloading model '{model_name}'... This may take a while.")
+            print(f"Downloading model '{model_name}'...")
             model.download()
 
         print("Loading model...")
@@ -43,11 +42,11 @@ def main():
             {"role": "user", "content": "Hello, world! Can you complete this greeting?"}
         ])
 
-        print("\n" +"=" * 50)
+        print("\n" + "=" * 50)
         print("Response from Foundry Client:")
         print("=" * 50)
         print(response.choices[0].message.content)
-        print("="*50 + "\n")
+        print("=" * 50 + "\n")
     except Exception as e:
         print(f"An error occurred: {e}")
     finally:
@@ -56,6 +55,7 @@ def main():
                 model.unload()
             except Exception:
                 pass
-        
+
+
 if __name__ == "__main__":
     main()
