@@ -1,60 +1,110 @@
+import math
 from foundry_local_sdk import Configuration, FoundryLocalManager
+
+# --- Ayarlar ---
+CHAT_MODEL_NAME = "phi-3.5-mini"
+EMBEDDING_MODEL_NAME = "qwen3-embedding-0.6b"
+
+# Knowledge base — each string represents a document
+documents = [
+    "Foundry Local runs AI models directly on your device without cloud connectivity.",
+    "The Foundry Local SDK supports Python, C#, JavaScript, and Rust.",
+    "Embedding models convert text into numerical vectors for similarity search.",
+    "Foundry Local uses ONNX Runtime for efficient model inference on CPUs and GPUs.",
+    "The model catalog provides pre-optimized models that you can download and run locally.",
+    "Retrieval-augmented generation grounds model responses in your own data.",
+    "Vector similarity search finds documents that are semantically close to a query.",
+    "Chat completions generate natural language responses from a prompt and context.",
+]
+
+
+def cosine_similarity(a, b):
+    """Compute cosine similarity between two vectors."""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    return dot / (norm_a * norm_b) if norm_a and norm_b else 0.0
+
+
+
+def find_relevant(query_embedding, doc_embeddings, top_k=2):
+    """Return the indices and scores of the top-k most similar documents."""
+    scores = []
+    for i, doc_emb in enumerate(doc_embeddings):
+        score = cosine_similarity(query_embedding, doc_emb)
+        scores.append((i, score))
+    scores.sort(key=lambda x: x[1], reverse=True)
+    return scores[:top_k]
+
+
 
 def main():
     print("Starting Foundry Client...")
 
-    # 1. Konfigürasyon ve başlatma
-    try:
-        config = Configuration(app_name="FoundryClientApp")
-        FoundryLocalManager.initialize(config)
-        manager = FoundryLocalManager.instance
-    except Exception as e:
-        print(f"Failed to initialize Foundry Local SDK: {e}")
-        return
+    # Initialize the SDK
+    config = Configuration(app_name="foundry_local_rag") 
+    FoundryLocalManager.initialize(config)
+    manager = FoundryLocalManager.instance
+    manager.download_and_register_eps()
 
-    # 2. Kullanılacak model
-    model_name = "phi-3.5-mini"
-    print(f"Preparing model '{model_name}'...")
+    # Load the embedding model
+    print(f"Loading embedding model '{EMBEDDING_MODEL_NAME}'...")
+    embedding_model = manager.catalog.get_model(EMBEDDING_MODEL_NAME)
+    if not getattr(embedding_model, "is_cached", False):
+        embedding_model.download()
+    embedding_model.load()
+    embedding_client = embedding_model.get_embedding_client()
 
-    model = None
+    # Embed all documents in a single batch call
+    response = embedding_client.generate_embeddings(documents)
+    doc_embeddings = [item.embedding for item in response.data]
+    print(f"Indexed {len(doc_embeddings)} documents.")
 
-    try:
-        manager.download_and_register_eps()
+    # Load the chat model
+    print(f"Loading chat model '{CHAT_MODEL_NAME}'...")
+    chat_model = manager.catalog.get_model(CHAT_MODEL_NAME)
+    if not getattr(chat_model, "is_cached", False):
+        chat_model.download()
+    chat_model.load()
+    chat_client = chat_model.get_chat_client()
 
-        catalog = manager.catalog
-        model = catalog.get_model(model_name)
+    print("\nModels loaded. Ready for questions.")
+    print('Type "quit" to exit.\n')
 
-        if model is None:
-            aliases = [m.alias for m in catalog.list_models()]
-            print(f"Model '{model_name}' not found. Available aliases: {aliases[:20]}")
-            return
+    # Interactive query loop (retrieve -> augment -> generate)
+    while True:
+        query = input("Question: ").strip()
+        if not query or query.lower() == "quit":
+            break
 
-        if not getattr(model, "is_cached", False):
-            print(f"Downloading model '{model_name}'...")
-            model.download()
+        # Embed the query
+        query_embedding = embedding_client.generate_embedding(query).data[0].embedding
 
-        print("Loading model...")
-        model.load()
+        # Retrieve the most relevant documents
+        results = find_relevant(query_embedding, doc_embeddings, top_k=2)
+        context = "\n".join(f"- {documents[i]}" for i, _ in results)
 
-        client = model.get_chat_client()
-        response = client.complete_chat([
-            {"role": "system", "content": "You are a helpful and friendly AI assistant."},
-            {"role": "user", "content": "Hello, world! Can you complete this greeting?"}
-        ])
+        # Build the prompt with retrieved context
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Answer the user's question using only the provided context. "
+                    "If the context doesn't contain enough information, say so.\n\n"
+                    f"Context:\n{context}"
+                ),
+            },
+            {"role": "user", "content": query},
+        ]
 
-        print("\n" + "=" * 50)
-        print("Response from Foundry Client:")
-        print("=" * 50)
-        print(response.choices[0].message.content)
-        print("=" * 50 + "\n")
-    except Exception as e:
-        print(f"An error occurred: {e}")
-    finally:
-        if model is not None:
-            try:
-                model.unload()
-            except Exception:
-                pass
+        # Stream the response
+        response = chat_client.complete_chat(messages)
+        print("Answer:", response.choices[0].message.content, "\n")
+
+    # Clean up
+    embedding_model.unload()
+    chat_model.unload()
+    print("Models unloaded. Done!")
 
 
 if __name__ == "__main__":
