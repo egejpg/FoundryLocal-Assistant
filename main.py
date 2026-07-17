@@ -1,21 +1,30 @@
-import math
+import math, sqlite3
 from foundry_local_sdk import Configuration, FoundryLocalManager
 
 # --- Ayarlar ---
 CHAT_MODEL_NAME = "phi-3.5-mini"
 EMBEDDING_MODEL_NAME = "qwen3-embedding-0.6b"
 
+conn = sqlite3.connect("knowledge_base.db")
+conn.execute("""
+             CREATE TABLE IF NOT EXISTS documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content TEXT NOT NULL,
+                embedding TEXT
+             )
+        """)
+
 # Knowledge base — each string represents a document
-documents = [
-    "Foundry Local runs AI models directly on your device without cloud connectivity.",
-    "The Foundry Local SDK supports Python, C#, JavaScript, and Rust.",
-    "Embedding models convert text into numerical vectors for similarity search.",
-    "Foundry Local uses ONNX Runtime for efficient model inference on CPUs and GPUs.",
-    "The model catalog provides pre-optimized models that you can download and run locally.",
-    "Retrieval-augmented generation grounds model responses in your own data.",
-    "Vector similarity search finds documents that are semantically close to a query.",
-    "Chat completions generate natural language responses from a prompt and context.",
-]
+# documents = [
+#     "Foundry Local runs AI models directly on your device without cloud connectivity.",
+#     "The Foundry Local SDK supports Python, C#, JavaScript, and Rust.",
+#     "Embedding models convert text into numerical vectors for similarity search.",
+#     "Foundry Local uses ONNX Runtime for efficient model inference on CPUs and GPUs.",
+#     "The model catalog provides pre-optimized models that you can download and run locally.",
+#     "Retrieval-augmented generation grounds model responses in your own data.",
+#     "Vector similarity search finds documents that are semantically close to a query.",
+#     "Chat completions generate natural language responses from a prompt and context.",
+# ]
 
 
 def cosine_similarity(a, b):
@@ -45,13 +54,17 @@ def main():
     config = Configuration(app_name="foundry_local_rag") 
     FoundryLocalManager.initialize(config)
     manager = FoundryLocalManager.instance
-    manager.download_and_register_eps()
+
+    print("Registering execution providers...")
+    manager.download_and_register_eps(progress_callback=lambda name, pct: print(f"\r  {name}: {pct:.1f}%", end="", flush=True))
+    print()
 
     # Load the embedding model
     print(f"Loading embedding model '{EMBEDDING_MODEL_NAME}'...")
     embedding_model = manager.catalog.get_model(EMBEDDING_MODEL_NAME)
     if not getattr(embedding_model, "is_cached", False):
-        embedding_model.download()
+        embedding_model.download(lambda pct: print(f"\r  {pct:.1f}%", end="", flush=True))
+        print()
     embedding_model.load()
     embedding_client = embedding_model.get_embedding_client()
 
@@ -64,7 +77,8 @@ def main():
     print(f"Loading chat model '{CHAT_MODEL_NAME}'...")
     chat_model = manager.catalog.get_model(CHAT_MODEL_NAME)
     if not getattr(chat_model, "is_cached", False):
-        chat_model.download()
+        chat_model.download(lambda pct: print(f"\r  {pct:.1f}%", end="", flush=True))
+        print()
     chat_model.load()
     chat_client = chat_model.get_chat_client()
 
