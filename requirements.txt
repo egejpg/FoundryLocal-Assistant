@@ -1,2 +1,5 @@
 foundry-local-sdk-winml
 sqlite3
+json
+math
+os

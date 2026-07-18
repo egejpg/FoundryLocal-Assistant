@@ -1,18 +1,10 @@
-import math, sqlite3
+import math, sqlite3, json, os
 from foundry_local_sdk import Configuration, FoundryLocalManager
 
 # --- Ayarlar ---
 CHAT_MODEL_NAME = "phi-3.5-mini"
 EMBEDDING_MODEL_NAME = "qwen3-embedding-0.6b"
 
-conn = sqlite3.connect("knowledge_base.db")
-conn.execute("""
-             CREATE TABLE IF NOT EXISTS documents (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                content TEXT NOT NULL,
-                embedding TEXT
-             )
-        """)
 
 # Knowledge base — each string represents a document
 # documents = [
@@ -25,6 +17,7 @@ conn.execute("""
 #     "Vector similarity search finds documents that are semantically close to a query.",
 #     "Chat completions generate natural language responses from a prompt and context.",
 # ]
+
 
 
 def cosine_similarity(a, b):
@@ -46,6 +39,27 @@ def find_relevant(query_embedding, doc_embeddings, top_k=2):
     return scores[:top_k]
 
 
+def embed_in_batches(embedding_client, texts, batch_size=10):
+    all_embeddings = []
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i + batch_size]
+        response = embedding_client.generate_embeddings(batch)
+        all_embeddings.extend(item.embedding for item in response.data)
+        print(f"  Embedded {min(i + batch_size, len(texts))}/{len(texts)}")
+    return all_embeddings
+
+
+def load_and_chunk_documents(folder="docs"):
+    chunks = []
+    for filename in os.listdir(folder):
+        if filename.endswith(".md"):
+            path = os.path.join(folder, filename)
+            with open(path, "r", encoding="utf-8") as f:
+                text = f.read()
+            paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+            chunks.extend(paragraphs)
+    return chunks
+
 
 def main():
     print("Starting Foundry Client...")
@@ -54,6 +68,15 @@ def main():
     config = Configuration(app_name="foundry_local_rag") 
     FoundryLocalManager.initialize(config)
     manager = FoundryLocalManager.instance
+
+    conn = sqlite3.connect("knowledge_base.db")
+    conn.execute("""
+                CREATE TABLE IF NOT EXISTS documents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    content TEXT NOT NULL,
+                    embedding TEXT
+                )
+            """)
 
     print("Registering execution providers...")
     manager.download_and_register_eps(progress_callback=lambda name, pct: print(f"\r  {name}: {pct:.1f}%", end="", flush=True))
@@ -68,10 +91,26 @@ def main():
     embedding_model.load()
     embedding_client = embedding_model.get_embedding_client()
 
+    documents = load_and_chunk_documents("docs")
+    print(f"Loaded {len(documents)} chunks from docs/ folder.")
+
     # Embed all documents in a single batch call
     response = embedding_client.generate_embeddings(documents)
-    doc_embeddings = [item.embedding for item in response.data]
+    doc_embeddings = embed_in_batches(embedding_client, documents, batch_size=10)
     print(f"Indexed {len(doc_embeddings)} documents.")
+
+    conn.execute("DELETE FROM documents")
+
+    for content, embedding in zip(documents, doc_embeddings):
+        conn.execute(
+            "INSERT INTO documents (content, embedding) VALUES (?, ?)",
+            (content, json.dumps(embedding))
+    )
+    conn.commit()
+
+    # To see if the documents are deleted and inserted correctly
+    # count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+    # print(f"Tabloda {count} satır var.")
 
     # Load the chat model
     print(f"Loading chat model '{CHAT_MODEL_NAME}'...")
@@ -86,39 +125,47 @@ def main():
     print('Type "quit" to exit.\n')
 
     # Interactive query loop (retrieve -> augment -> generate)
-    while True:
-        query = input("Question: ").strip()
-        if not query or query.lower() == "quit":
-            break
+    try:
+        while True:
+            query = input("Question: ").strip()
+            if not query or query.lower() == "quit":
+                break
 
-        # Embed the query
-        query_embedding = embedding_client.generate_embedding(query).data[0].embedding
+            # Embed the query
+            query_embedding = embedding_client.generate_embedding(query).data[0].embedding
 
-        # Retrieve the most relevant documents
-        results = find_relevant(query_embedding, doc_embeddings, top_k=2)
-        context = "\n".join(f"- {documents[i]}" for i, _ in results)
+            # Retrieve the most relevant documents
+            results = find_relevant(query_embedding, doc_embeddings, top_k=2)
+            context = "\n".join(f"- {documents[i]}" for i, _ in results)
 
-        # Build the prompt with retrieved context
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "Answer the user's question using only the provided context. "
-                    "If the context doesn't contain enough information, say so.\n\n"
-                    f"Context:\n{context}"
-                ),
-            },
-            {"role": "user", "content": query},
-        ]
+            # Build the prompt with retrieved context
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "Answer the user's question using only the provided context. "
+                        "Respond in 1-2 sentences, directly and factually. "
+                        "Do NOT say things like 'refer to the knowledge base', 'I can provide more details if needed', "
+                        "or offer to elaborate further — just give the answer and stop. "
+                        "If the context doesn't contain enough information, say so in one sentence.\n\n"
+                        f"Context:\n{context}"
+                    ),
+                },
+                {"role": "user", "content": query},
+            ]
 
-        # Stream the response
-        response = chat_client.complete_chat(messages)
-        print("Answer:", response.choices[0].message.content, "\n")
+            # Stream the response
+            response = chat_client.complete_chat(messages)
+            print("Answer:", response.choices[0].message.content, "\n")
 
-    # Clean up
-    embedding_model.unload()
-    chat_model.unload()
-    print("Models unloaded. Done!")
+    except KeyboardInterrupt:
+    print("\n\nInterrupted by user.")
+
+    finally:
+        # Clean up
+        embedding_model.unload()
+        chat_model.unload()
+        print("Models unloaded. Done!")
 
 
 if __name__ == "__main__":
