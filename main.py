@@ -94,19 +94,40 @@ def main():
     documents = load_and_chunk_documents("docs")
     print(f"Loaded {len(documents)} chunks from docs/ folder.")
 
-    # Embed all documents in a single batch call
-    response = embedding_client.generate_embeddings(documents)
-    doc_embeddings = embed_in_batches(embedding_client, documents, batch_size=10)
+    count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+
+    if count == len(documents) and count > 0:
+        print("Using cached embeddings from SQLite.")
+        rows = conn.execute("SELECT content, embedding FROM documents").fetchall()
+        documents = [row[0] for row in rows]
+        doc_embeddings = [json.loads(row[1]) for row in rows]
+
+    else:
+        print("Cache miss or empty — generating embeddings.")
+        doc_embeddings = embed_in_batches(embedding_client, documents, batch_size=10)
+
+        conn.execute("DELETE FROM documents")
+        for content, embedding in zip(documents, doc_embeddings):
+            conn.execute(
+                "INSERT INTO documents (content, embedding) VALUES (?, ?)",
+                (content, json.dumps(embedding))
+            )
+        conn.commit()
+
     print(f"Indexed {len(doc_embeddings)} documents.")
 
-    conn.execute("DELETE FROM documents")
+    # Embed all documents in a single batch call
+    # response = embedding_client.generate_embeddings(documents)
+    # print(f"Indexed {len(doc_embeddings)} documents.")
 
-    for content, embedding in zip(documents, doc_embeddings):
-        conn.execute(
-            "INSERT INTO documents (content, embedding) VALUES (?, ?)",
-            (content, json.dumps(embedding))
-    )
-    conn.commit()
+    # conn.execute("DELETE FROM documents")
+
+    # for content, embedding in zip(documents, doc_embeddings):
+    #     conn.execute(
+    #         "INSERT INTO documents (content, embedding) VALUES (?, ?)",
+    #         (content, json.dumps(embedding))
+    # )
+    # conn.commit()
 
     # To see if the documents are deleted and inserted correctly
     # count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
@@ -159,7 +180,7 @@ def main():
             print("Answer:", response.choices[0].message.content, "\n")
 
     except KeyboardInterrupt:
-    print("\n\nInterrupted by user.")
+        print("\n\nInterrupted by user.")
 
     finally:
         # Clean up
